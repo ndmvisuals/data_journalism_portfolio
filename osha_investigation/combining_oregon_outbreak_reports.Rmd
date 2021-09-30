@@ -1,5 +1,7 @@
 ---
-title: "Portfolio Sample"
+title: "oregon_weekly_report_etl"
+author: "Nick McMillan and Rachel Logan"
+date: "3/25/2021"
 output: html_document
 ---
 
@@ -7,4 +9,238 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+#load libraries
+```{r}
+library(janitor)
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(stringr)
+```
 
+
+#clean adobe online versions of tabulated pdfs from oregon, these are the reports from december onwards
+```{r}
+####get starting point, is called by create
+#if cell 
+get_start = function(item){
+  for (i in 1:length(item)){
+    if(is.na(item[i,1]) == TRUE){
+    }
+  
+    else{
+      if (item[i,1] == "Facility Name"){
+        return(i)
+      }
+    }
+  }
+}
+##function to clean chunks, is called by create
+clean_chunks <- function(df, counter){
+  section_names=c("care_facility","care_facility","workplace","workplace","childcare","childcare","grade_school","grade_school")
+  label=section_names[counter]
+  df=df[colSums(!is.na(df)) > 0]    #empty columns removed
+  
+  headers<-as.matrix(df[1,])        #save headers
+  names(df)=headers
+  df = df[-1,]
+  headers_1=headers[1]
+  df = df %>% filter(!! sym(headers_1) != headers_1) %>% 
+    filter(!! sym(headers_1) !="Total") %>% 
+    clean_names() %>% 
+    mutate(resolved_status= ifelse (counter%%2==1,"active","resolved")) %>% 
+    mutate(category=label)
+    
+  colnames(df)[1]="facility_name"
+  return(df)
+}
+#function that takes a excel and cleans it
+create = function(document, file_name){
+  
+  ### output chunks 1-8 into function environment
+  counter = 1
+  end_point=0
+  split_prepare<<-FALSE
+  begin <<- get_start(document)
+  for (row in begin:nrow(document)){
+    if (counter == 1){
+      start_point = begin+1
+    }
+    if(sum(is.na(document[row,2:13])) == 12){
+      if (split_prepare==FALSE)
+        end_point=row
+      split_prepare<-TRUE
+    }
+    else if (split_prepare){
+      split_prepare<-FALSE
+      chunk = document[(start_point):end_point-1,]
+      name = paste0("chunk_",toString(counter))
+      assign(name,chunk,envir = environment())
+      counter = counter +1
+      #return(chunk)
+      start_point = row + 1
+    }
+  }
+  chunk = document[(start_point-1):row,]
+  name = paste0("chunk_",toString(counter))
+  assign(name,chunk,envir = environment())
+  
+  
+  ######create a list of the 8 chunks and apply custom cleaning package
+  
+  list_of_chunks<<-list(chunk_1,chunk_2,chunk_3,chunk_4,chunk_5,chunk_6,chunk_7,chunk_8)
+  for (i in 1:length(list_of_chunks)){
+    list_of_chunks[[i]]<<-clean_chunks(list_of_chunks[[i]],i)
+  }
+  
+  #### compile into 1 file
+  
+  start=TRUE
+  for(i in list_of_chunks){
+    if (start==TRUE){
+      master_chunk_final=i
+      start=FALSE
+    }
+    master_chunk_final=bind_rows(master_chunk_final,i)
+  }
+  
+  master_chunk_final<-master_chunk_final %>% 
+    mutate(investigation_start_date=convert_to_date(investigation_start_date)) %>% 
+    mutate(most_recent_onset=convert_to_date(most_recent_onset)) %>% 
+    mutate(first_reported=convert_to_date(first_reported)) %>% 
+    mutate(report_name = file_name)
+  
+  return(master_chunk_final)
+}
+    
+```
+
+
+
+```{r}
+file_list = list.files(path = "input/outbreak-reports-csv") 
+dataset = data.frame()
+#length(file_list)
+for (i in 1:1){
+  
+  temp_data = read_csv(paste0("input/outbreak-reports-csv/",file_list[i]))
+  temp_data2 = create(temp_data, file_list[i])
+  dataset = bind_rows(dataset, temp_data2)
+  
+  
+}
+```
+
+
+
+
+
+### Reading in the weekly reports functions, reports before december
+```{r}
+clean_weekly_report = function(df, tab_name){
+  
+  
+  df=df[colSums(!is.na(df)) > 0]    #empty columns removed
+  
+  df = df %>% 
+    clean_names() 
+  colnames(df)[1]="facility_name"
+  
+  category = sub("_.*", "", tab_name)
+  resolved_status = sub(".*_", "", tab_name)
+  
+  df$category = category
+  df$resolved_status = resolved_status
+  
+  return(df)
+}
+ingest_weekly_report <- function(path, file_name){
+  
+  tab_names = excel_sheets(path = path)
+  tab_names <<- tab_names[! tab_names %in% "Table 1"]
+  ls_sheets <<- lapply(tab_names, function(x) read_excel(path = path, sheet = x))
+  
+  start = TRUE
+  counter = 1
+  for (sheet in ls_sheets){
+    if (start == TRUE){
+      result_df = clean_weekly_report(sheet, tab_names[counter]) %>% mutate(across(everything(), as.character))
+      counter = counter +1
+      start = FALSE
+    }
+    
+    else{
+      new = clean_weekly_report(sheet, tab_names[counter]) %>%  mutate(across(everything(), as.character))
+      result_df = bind_rows(result_df, new)
+      counter = counter +1
+    }
+  }
+   result_df$report_name = file_name
+   return(result_df)
+  
+}
+#test = ingest_weekly_report("input/weekly-reports/weekly-reports-excel/COVID-19-Weekly-Report-2020-10-14-FINAL.xlsx")
+```
+
+#compile weekly outbreak reports
+```{r}
+file_list = list.files(path = "input/weekly-reports/weekly-reports-excel") 
+dataset2 = data.frame()
+for (i in 1:1){
+  
+  #temp_data = read_excel(paste0("input/weekly-reports/weekly-reports-excel/",file_list[i]))
+  path = paste0("input/weekly-reports/weekly-reports-excel/",file_list[i])
+  temp_data = ingest_weekly_report(path, file_list[i])
+  temp_data = temp_data %>% mutate(across(everything(), as.character))
+  dataset2 = bind_rows(dataset2, temp_data)
+  
+  
+}
+```
+
+
+#clean up the combined weekly reports
+```{r}
+dataset2 = dataset2 %>% unite(sep = "", col = "total_deaths", c("total_deaths", "totaldeathsa","total_deatha", "total_deathsa" ),remove = TRUE, na.rm = TRUE) %>% 
+  
+  unite(sep = "", col = "total_cases", c("total_casesa", "totalcases","total_cases", "totalcasesa" ),remove = TRUE, na.rm = TRUE) %>%  
+  unite(sep = "", col = "investigation_start_date", c("investigationstartdate" , "investigation_start_date" ,"investigation_startdate"),remove = TRUE, na.rm = TRUE) %>% 
+  
+  unite(sep = "", col = "most_recent_onset" , c("mostrecentonset"   , "most_recentonset"  ,"mostrecent_onset", "most_recent_onset"  ),remove = TRUE, na.rm = TRUE) %>% 
+  
+  unite(sep = "", col = "first_reported" , c("firstreported"   , "first_reported" ),remove = TRUE, na.rm = TRUE) %>% 
+  
+  unite(sep = "", col = "county", c("county", "countya" ),remove = TRUE, na.rm = TRUE) %>% 
+  mutate(first_reported = as_date(first_reported), investigation_start_date = as_date(investigation_start_date), most_recent_onset = as_date(most_recent_onset))
+  
+  
+```
+
+
+the final data set
+```{r}
+final_dataset = bind_rows(dataset, dataset2) %>% 
+  mutate(report_dates =  str_extract(report_name, "\\d{4}\\-(0?[1-9]|1[012])\\-(0?[1-9]|[12][0-9]|3[01])*"))
+#final_dataset<-final_dataset%>%
+#  mutate(year = year(report_dates),
+#        day = day(report_dates), 
+#        month = month(report_dates),
+#        report_date = make_date(year, month, day))%>%
+#  mutate(facility_name = tolower(str_replace_all(str_squish(facility_name)," ", "")))%>%
+#  mutate(address = tolower(str_replace_all(str_squish(address)," ", "")))%>%
+#  select(!c(report_dates, year, month,day))
+```
+
+```{r}
+#this is the one we used
+outbreak_analysis<-final_dataset%>%
+  mutate(facility_name_squished = tolower(str_replace_all(str_squish(facility_name)," ", "")))%>%
+  #mutate(address = tolower(str_replace_all(str_squish(address)," ", "")))%>%
+  group_by(facility_name_squished, investigation_start_date)%>%
+  slice(which.max(total_cases))
+
+```
+
+```{r}
+or_outbreaks_combined_cleaned_20200414_20210324 <-outbreak_analysis
+#write.csv(or_outbreaks_combined_cleaned_20200414_20210324,"../../etl/state_health_department_outbreaks/input_data/oregon/or_outbreaks_combined_cleaned_20200414_20210324.csv")
