@@ -1,10 +1,320 @@
 ---
-title: "Portfolio Sample"
+title: "Nick;s Portfolio Sample"
+author: "Nick McMillan"
 output: html_document
+    
 ---
-
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
+## Load Libraries, Settings and Global Functions
+```{r warning=FALSE,error=FALSE,message=FALSE}
+# For general data science
+library(tidyverse)
+# For data cleaning
+library(janitor)
+# For loading Excel files
+library(readxl)
+# For working with datetime
+library(lubridate)
+# For U.S. Census Bureau data
+library(tigris)
+# For pretty tables
+library(kableExtra)
+library(knitr)
+## Function to filter for Walmart facilities
+# We created a function to identify all Walmart-owned facilities across various datasets. Those facilities include retail stores and distribution centers for either Walmart or Sam's Club.
+filter_walmart = function(dataframe, company_name_column){
+   walmart_pattern = "walmart|wal mart|wal-mart|sam club|sams club|sam's club"
+   walmart_related = dataframe %>%
+    # Make all establishment names lowercase.
+    mutate(name = tolower(!! sym(company_name_column))) %>%
+    # Create a new column that detects whether establishment names include any variations on Walmart or Sam's Club.
+    mutate(is_walmart = str_detect(name, walmart_pattern )) %>%
+    # Filter for establishments that are part of the Walmart company.
+    filter(is_walmart == TRUE)
+   return(walmart_related)
+}
+## Function for formatted table output
+output_formatted_table = function(table, text){
+  table %>%
+    kable(caption = text) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), font_size = 14, fixed_thead = T) %>%
+    scroll_box(width = "100%", height = "200px")
+}
+# Function to download inspection and violation data
+## This will download latest version of inspection data.  For our story, we used data through 2021-05-17.
+## The code to download inspection and violation data was modified from [code released by the Center for Public Integrity](https://github.com/PublicI/osha-fatality-inspections).
+download_osha_data <- function(folder, data_directory){
+  file_date <- str_remove_all(Sys.Date(), "-") # Set file date
+  data_path <- folder
+  data_dir <- data_directory
+  data_url <- "https://enfxfr.dol.gov/data_catalog/OSHA"
+  data_file <- paste0(data_directory, file_date, ".csv.zip")
+  if (!file.exists(file.path(data_path, data_dir))) {
+    dir.create(data_path)
+    download.file(paste(data_url, data_file, sep = "/"),
+                  file.path(data_path, data_file))
+    unzip(file.path(data_path, data_file),
+          exdir = file.path(data_path, data_dir)) }
+    if(data_directory == "osha_inspection_"){
+      return(
+        list.files(
+          path = file.path(data_path, data_directory),
+          pattern = "*.csv",
+          full.names = TRUE
+        ) %>%
+          map_dfr(
+            read_csv,
+            col_types = cols(
+              .default = "c",
+              open_date = col_date(),
+              case_mod_date = col_date(),
+              close_conf_date = col_date(),
+              close_case_date = col_date()
+            )
+          )
+      )
+    }
+    if(data_directory == "osha_violation_"){
+      return(
+        list.files(
+          path = file.path(data_path, data_directory),
+          pattern = "*.csv",
+          full.names = TRUE
+        ) %>%
+          map_dfr(
+            read_csv,
+            col_types = cols(
+              .default = "c",
+              issuance_date = col_date(),
+              abate_date = col_date(),
+              load_dt = col_date(),
+              fta_final_order_date = col_date(),
+              fta_contest_date = col_date(),
+              final_order_date = col_date(),
+              contest_date = col_date(),
+              fta_issuance_date = col_date(),
+              current_penalty = col_number(),
+              fta_penalty = col_number(),
+              initial_penalty = col_number()
+            )
+          )
+      )
+    }
+}
+```
+## Load and Clean Data
 
+### Federal OSHA
+
+#### COVID-19 Complaints
+We examined closed COVID-19 complaints published by the federal Occupational Safety and Health Administration. The data includes all valid complaints received by OSHA since the start of the pandemic. Federal and state OSHA offices submit their data to the federal database. However, certain data may be unique to the state's operating system or may not be transferred to federal OSHA. This means that, while state OSHA complaints are accessible via the federal OSHA website, totals may not always be comprehensive.
+
+Federal OSHA's database only reveals companies' names when the complaints associated with them are closed. Therefore, when analyzing complaints for Walmart on a national level, analysis is based on closed complaints. Source data is available at [OSHA.gov's Covid-19 page](https://www.osha.gov/foia/archived-covid-19-data).
+
+OSHA updates the complaints data weekly. We used complaints data spanning various date ranges to match the date ranges of other datasets used in our analysis. Variable names involving "OIS," which stands for OSHA Information System, indicate the federal database.
+
+```{r warning=FALSE,error=FALSE,message=FALSE}
+# Function to clean closed complaints
+clean_ois_closed_complaints = function(database){
+    result_database = database %>%
+    # Take out the first two rows because they aren't row headings.
+    remove_empty() %>%
+    slice(-1) %>%
+    # Bring row headings to the first line of the data set.
+    row_to_names(1) %>%
+    # Clean column names
+    clean_names() %>%
+    # rid is the osha office number
+    #first two numbers are OSHA office region, if the 3rd digit is 5 it is a state_plan office, else its a federal plan office
+    mutate(osha_office_region = substr(rid, 1,2), office_type_number = substr(rid, 3,3), office_type = ifelse(office_type_number == "5", "state_plan_office", "federal_plan_office") ) %>%
+    #make a column to identify if an inspection occurred
+    mutate(inspection_occurred = ifelse(is.na(insp_number) == FALSE,'yes', 'no')) %>%
+    #convert date
+    mutate(upa_receipt_date = excel_numeric_to_date(as.numeric(upa_receipt_date)))
+    return(result_database)
+}
+# Read in closed complaints for 2021-03-07 --------------------
+ois_closed_complaints_20210307 = read_excel("../etl/federal_osha_complaints/input_data/Closed_Federal_State_Plan_COVID-19_Complaints_Through_0307_2021.xlsx") %>%
+  clean_ois_closed_complaints()
+# Read in closed complaints for 2021-03-21 --------------------
+ois_closed_complaints_20210321 = read_excel("../etl/federal_osha_complaints/input_data/Closed_Federal_State_Plan_Valid_COVID-19_Complaints_Through_0321_2021.xlsx") %>%
+  clean_ois_closed_complaints()
+# Read in closed federal complaints database for 2021-03-28 --------------------
+ois_closed_complaints_20210328 = read_excel("../etl/federal_osha_complaints/input_data/Closed_Federal_State_Plan_Valid_COVID-19_Complaints_Through_0328_2021.xlsx") %>%
+  clean_ois_closed_complaints()
+# Federal citations data --------------------
+federal_covid_violations_20210325 = read_excel("data/federal_pipeline/COVID Case Tracker - Cases with Issued Violations as of 2021-03-25.xlsx") %>%
+  clean_names() %>%
+  # Create a match_nr from the inspection number to match with data downloaded from OSHA
+  mutate(match_nr =  str_sub(inspection_number, 2,7)) %>%
+  mutate(estab_name = tolower(establishment_name))
+```
+#### Inspections and Violations Published by Federal OSHA
+The dataset we used consists of inspection case details for OSHA inspections conducted annually. According to the OSHA website, the data "includes information regarding the impetus for conducting the inspection, and details on citations and penalty assessments resulting from violations of OSHA standards."
+
+The data can be viewed on [on OSHA's enforcement data page](https://enforcedata.dol.gov/views/data_summary.php). The code to download inspection and violation data was modified from [code released by the Center for Public Integrity](https://github.com/PublicI/osha-fatality-inspections).
+
+```{r warning=FALSE,error=FALSE,message=FALSE}
+# Download inspections and violations data
+## These lines are commented so as not to execute when the markdown file is knitted to produce html.
+#df.inspections = download_osha_data("data/osha_inspections_violations", "osha_inspection_", file_date)
+#df.violations = download_osha_data("data/osha_inspections_violations", "osha_violation_", file_date)
+# This are the above datasets that were downloaded as of 2021-05-07. In order to fit on Git, the data was filtered from 2020-01-01 to 2021-05-07
+df.inspections =  read_csv("inspections_20200101_20210507.csv")
+df.violations =  read_csv("violations_20200101_20210507.csv")
+## The citation sheet that OSHA provided has inspection numbers, while the enforcement data has activity numbers. The activity number is a longer number with the inspection number contained within it. In order to match them we followed this method:
+## 1) Filter enforcement data for 2020 to present.
+## 2) Create a unique identifier to match inspection numbers to activity numbers. Example:
+## activity number = 34[452565]4
+## inspection number = 1[452565]
+# Use OSHA's data key to label the data
+df.inspections_cleaned = df.inspections %>%
+  # Turn activity number into a number that we can match with the inspection number provided in federal COVID-19 citation list
+  mutate(match_nr = str_sub(activity_nr, 3,8)) %>%
+  # Break apart the RID to interpret: first two numbers are OSHA office region, if the 3rd digit is 5 it is a state_plan office, else its a federal plan office
+  mutate(osha_office_region = substr(reporting_id, 1,2),
+         office_type_number = substr(reporting_id, 3,3),
+         office_type = ifelse(office_type_number == "5", "state_plan_office", "federal_plan_office") ) %>%
+  mutate(estab_name = tolower(estab_name)) %>%
+  # Add year
+  mutate(year = year(open_date))
+df.violations_cleaned = df.violations %>%
+  # Create a number from activity number that we can match with inspection number
+  mutate(match_nr = str_sub(activity_nr, 3,8)) %>%
+  # Create a year column from issuance date
+  mutate(year = year(issuance_date))
+# Transform inspection number into a match number to match with inspections database
+federal_covid_violations_20210325 = federal_covid_violations_20210325 %>%
+  mutate(match_nr =  str_sub(inspection_number, 2,7)) %>%
+  mutate(estab_name = tolower(establishment_name))
+```
+
+### FACT: 3% inspected, 12.5% with violations [CQ | Full & AP]
+"When workers try to sound the alarm to OSHA by submitting COVID-related complaints, only a fraction lead to inspections, and even fewer result in a citation.  As of late March, 3% of closed COVID-19 complaints to federal OSHA offices deemed valid by the agency resulted in an inspection, 12.5% of which led to citations with an average penalty of $13,000. OSHA has reduced over a third of penalties. For Walmart, slightly fewer complaints resulted in inspections — 2.6%. No inspections led to a citation."
+
+#### Explanation
+To produce these findings, we started the list of closed valid COVID-19 complaints released by OSHA as of March 21. To find complaints that led to inspections, we filtered the data set for only those complaints with a corresponding inspection number.  To discover inspections that led to citations, we used a list OSHA provided to us. To obtain current penalty information, we pulled data from  [OSHA's enforcement data site](https://enforcedata.dol.gov/views/data_summary.php). A data visualization embedded in the story also makes use of these findings.
+
+#### Supporting Code and Output
+```{r warning=FALSE,error=FALSE,message=FALSE}
+## Pipeline for all valid closed federal complaints
+# Get all inspections from 2020 to present
+df.inspections_2020topresent = df.inspections_cleaned %>% filter(year >= 2020)
+# Get all violations from 2020 to present
+df.violations_2020topresent = df.violations_cleaned %>% filter(year >= 2020)
+# Get unique match_nr's from the federal violations sheet
+unique_inspection_numbers_federal_violations = unique(federal_covid_violations_20210325$match_nr)
+# Filter the inspections for all of the inspections listed in the federal covid database. This will give us information on what triggered the inspection
+detailed_inspections_with_covid_violation = df.inspections_2020topresent %>% filter(match_nr %in% unique_inspection_numbers_federal_violations)
+# Get a list of the unique activity numbers so we can match up to violations database
+unique_activity_numbers_inspection_with_covid_violations = unique(detailed_inspections_with_covid_violation$activity_nr)
+# Get all violation info for the inspection numbers
+detailed_violations_covid = df.violations_2020topresent %>% filter(activity_nr %in% unique_activity_numbers_inspection_with_covid_violations)
+# Grouped all the violations together to get their current penalty and initial penalty resulting from the inspection activity number
+summary_detailed_violations_covid = detailed_violations_covid %>%
+  group_by(activity_nr) %>%
+  summarise(total_initial = sum(initial_penalty), total_current = sum(current_penalty))
+# Join the initial and current money info for the inspections back to the detailed_inspections_with_covid_violation
+final_detailed_inspections_with_covid_violations = left_join(detailed_inspections_with_covid_violation, summary_detailed_violations_covid, by = "activity_nr") %>%
+  # Select columns that we need
+  select(activity_nr, reporting_id, estab_name, site_address, open_date, case_mod_date, close_conf_date, close_case_date, match_nr, office_type,  year, total_initial, total_current)
+# Combine the final detailed sheet (this includes the initial penalty, current penalty, what triggered the inspection)
+complete_federal_covid_violations_20210325 = left_join(federal_covid_violations_20210325,final_detailed_inspections_with_covid_violations, by = "match_nr") %>%
+  # Checking to make sure that initial penalties from the downloaded data match the excel sheet provided by osha
+  mutate(check_initial_match = ifelse(total_initial_penalty == total_initial, "yes", "no")) %>%
+  # Calculate the change from initial penalty to current penalty
+  mutate(penalty_change = total_initial - total_current)
+## Prepare dataframe of federal closed complaints --------------------
+# Creates a dataframe of closed federal complaints as of March 21, 2021
+federal_closed_ois_complaints_20210321  = ois_closed_complaints_20210321 %>%
+  # Choose federal plan offices
+  filter(office_type == "federal_plan_office")
+# --------------------
+valid_closed_covid_complaints_to_inspections = federal_closed_ois_complaints_20210321 %>%
+  group_by(inspection_occurred) %>%
+  summarise(number_complaints = n()) %>%
+  pivot_wider(names_from = inspection_occurred, values_from = number_complaints) %>%
+  rename("complaint_with_inspection" ="yes", "complaint_with_no_inspection" = "no" ) %>%
+  mutate(total_complaints = complaint_with_inspection + complaint_with_no_inspection) %>%
+  mutate(pct_complaints_to_inspections = round(complaint_with_inspection / (total_complaints) * 100,2))
+# --------------------
+# Create a dataframe of unique inspection numbers.
+federal_closed_ois_complaints_20210321_insp_numbers = federal_closed_ois_complaints_20210321  %>%
+  filter(inspection_occurred == "yes") %>%
+  select(insp_number) %>%
+  separate_rows(insp_number) %>%
+  unique() %>%
+  tibble() %>%
+  mutate(insp_number = as.numeric(insp_number))
+# Only keep the inspection numbers from the citation sheet that OSHA sent, that appear in the federal closed citation data
+federal_closed_complaints_inspection_resulting_in_violation = complete_federal_covid_violations_20210325 %>%
+  filter(inspection_number %in% federal_closed_ois_complaints_20210321_insp_numbers$insp_number)
+# Number of inspections related to complaints that resulted in a citation
+num_closed_federal_complaints_inspections_cited = nrow(federal_closed_complaints_inspection_resulting_in_violation)
+average_initial_penalty = tibble( average_initial_penalty = mean(federal_closed_complaints_inspection_resulting_in_violation$total_initial_penalty))
+# --------------------
+inspection_to_citation_percent = federal_closed_ois_complaints_20210321 %>%
+  group_by(inspection_occurred) %>%
+  summarise(number_complaints_with_inspections = n()) %>%
+  filter(inspection_occurred == "yes") %>%
+  add_column("resulting_citations" = num_closed_federal_complaints_inspections_cited) %>%
+  mutate(percent_inspections_resulting_in_violations = round((resulting_citations/number_complaints_with_inspections)*100,2)) %>%
+  select(-inspection_occurred)
+# --------------------
+# Get percent of penalties that have citations have been reduced
+reduced_penalties = federal_closed_complaints_inspection_resulting_in_violation %>%
+  mutate(penalty_reduced = case_when(
+    penalty_change > 0 ~ "reduced_penalty",
+    TRUE ~ "no_change"
+  )) %>%
+  group_by(penalty_reduced) %>%
+  summarise(num = n()) %>%
+  pivot_wider(names_from = penalty_reduced, values_from = num) %>%
+  mutate(total = reduced_penalty + no_change) %>%
+  mutate(pct_penalties_reduced = round(reduced_penalty / (total) *100,2))
+# Results ---------------------
+output_formatted_table(valid_closed_covid_complaints_to_inspections, "3% of closed COVID-19 complaints to federal OSHA offices deemed valid by the agency resulted in an inspection")
+output_formatted_table(inspection_to_citation_percent,"12.5% of which led to citations" )
+output_formatted_table(average_initial_penalty, "with an average penalty of $13,000")
+output_formatted_table(reduced_penalties, "OSHA has reduced over a third of penalties")
+## Pipeline for all valid closed federal complaints regarding Walmart
+# Calculate percent of Walmart complaints that had a related inspection
+valid_closed_walmart_covid_complaints_to_inspections = federal_closed_ois_complaints_20210321 %>%
+  filter_walmart("estab_name") %>%
+  group_by(inspection_occurred) %>%
+  summarise(number_complaints = n()) %>%
+  pivot_wider(names_from = inspection_occurred, values_from = number_complaints) %>%
+  rename("complaint_resulted_in_inspection" ="yes", "no_inspection_occurred" = "no" ) %>%
+  mutate(pct_complaints_to_inspections = round(complaint_resulted_in_inspection / (complaint_resulted_in_inspection + no_inspection_occurred) * 100,2))
+# ---------------------
+# Create a dataframe of inspection numbers related to closed federal Walmart complaints
+federal_closed_ois_walmart_complaints_20210321_insp_numbers = federal_closed_ois_complaints_20210321  %>%
+  filter_walmart("estab_name") %>%
+  filter(inspection_occurred == "yes") %>%
+  select(insp_number) %>%
+  separate_rows(insp_number) %>%
+  unique() %>%
+  tibble() %>%
+  mutate(insp_number = as.numeric(insp_number))
+# Filter for inspection numbers resulting from Walmart COVID-19 complaints in the violation database
+federal_closed_walmart_complaints_inspected_cited = complete_federal_covid_violations_20210325 %>%
+  # Filter the inspection numbers from the violation sheet for the inspection numbers tied with closed walmart complaints
+  filter(inspection_number %in% federal_closed_ois_walmart_complaints_20210321_insp_numbers$insp_number)
+num_federal_closed_walmart_complaints_inspections_cited = nrow(federal_closed_walmart_complaints_inspected_cited)
+# --------------------
+# Calculate percentage of Walmart complaints whose inspections resulted in citation
+walmart_inspection_to_citation_percent = federal_closed_ois_complaints_20210321 %>%
+  filter_walmart("estab_name") %>%
+  group_by(inspection_occurred) %>%
+  summarise(number_complaints_with_inspections = n()) %>%
+  filter(inspection_occurred == "yes") %>%
+  add_column("resulting_citations" = num_federal_closed_walmart_complaints_inspections_cited) %>%
+  mutate(percent_inspections_resulting_in_violations = round((resulting_citations/number_complaints_with_inspections)*100,2)) %>%
+  select(-inspection_occurred)
+# Results --------------------
+output_formatted_table(valid_closed_walmart_covid_complaints_to_inspections, "For Walmart, slightly fewer complaints resulted in inspections — 2.6%.")
+output_formatted_table(walmart_inspection_to_citation_percent, "No inspections led to a citation.")
+```
